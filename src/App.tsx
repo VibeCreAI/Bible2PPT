@@ -63,25 +63,41 @@ interface PPTSettings {
 
 const DEFAULT_SETTINGS: PPTSettings = {
   ratio: '16:9',
-  bgColor: '#FFFFFF',
-  textColor: '#000000',
-  titleColor: '#000000',
-  subtitleColor: '#000000',
-  verseNumColor: '#6B7280',
+  bgColor: '#0F172A',
+  textColor: '#F1F5F9',
+  titleColor: '#93C5FD',
+  subtitleColor: '#94A3B8',
+  verseNumColor: '#60A5FA',
   bodyFontFamily: 'Malgun Gothic',
   titleFontFamily: 'Malgun Gothic',
   subtitleFontFamily: 'Malgun Gothic',
-  fontSize: 44,
-  titleFontSize: 24,
-  subtitleFontSize: 18,
+  fontSize: 36,
+  titleFontSize: 26,
+  subtitleFontSize: 16,
   textAlign: 'center',
   titleAlign: 'left',
   bgImage: null,
-  titleY: 4,
-  subtitleY: 4,
-  bodyY: 20,
+  titleY: 5,
+  subtitleY: 13,
+  bodyY: 25,
   slideSplitMode: 'per_verse',
 };
+
+const DEFAULT_PASSAGES: PassageEntry[] = [
+  {
+    id: 'default-sample',
+    version: 'krv',
+    bookCode: 'John',
+    chapter: 3,
+    startVerse: 16,
+    endVerse: 16,
+    label: '요한복음 3:16',
+    title: '요한복음 3:16',
+    subtitle: '주일 낮 예배',
+    rawText: '16 하나님이 세상을 이처럼 사랑하사 독생자를 주셨으니 이는 저를 믿는 자마다 멸망치 않고 영생을 얻게 하려 하심이니라',
+    isExpanded: false,
+  },
+];
 
 const FONT_OPTIONS = [
   { label: '맑은 고딕 (Malgun Gothic)', value: 'Malgun Gothic' },
@@ -138,7 +154,7 @@ export default function App() {
   const [previewSlideIndex, setPreviewSlideIndex] = useState(0);
 
   // Passages: each has its own title, subtitle, rawText, expanded state
-  const [passages, setPassages] = useState<PassageEntry[]>(() => loadFromStorage('passages', []));
+  const [passages, setPassages] = useState<PassageEntry[]>(() => loadFromStorage('passages', DEFAULT_PASSAGES));
   const [defaultSubtitle, setDefaultSubtitle] = useState<string>(() => loadFromStorage('defaultSubtitle', '주일 낮 예배'));
 
   // Bible lookup controls
