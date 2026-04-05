@@ -93,7 +93,7 @@ const DEFAULT_PASSAGES: PassageEntry[] = [
     endVerse: 16,
     label: '요한복음 3:16',
     title: '요한복음 3:16',
-    subtitle: '주일 낮 예배',
+    subtitle: '첫번째 주제',
     rawText: '16 하나님이 세상을 이처럼 사랑하사 독생자를 주셨으니 이는 저를 믿는 자마다 멸망치 않고 영생을 얻게 하려 하심이니라',
     isExpanded: false,
   },
@@ -155,7 +155,7 @@ export default function App() {
 
   // Passages: each has its own title, subtitle, rawText, expanded state
   const [passages, setPassages] = useState<PassageEntry[]>(() => loadFromStorage('passages', DEFAULT_PASSAGES));
-  const [defaultSubtitle, setDefaultSubtitle] = useState<string>(() => loadFromStorage('defaultSubtitle', '주일 낮 예배'));
+  const [defaultSubtitle, setDefaultSubtitle] = useState<string>(() => loadFromStorage('defaultSubtitle', '첫번째 주제'));
 
   // Bible lookup controls
   const [bibleVersion, setBibleVersion] = useState<BibleVersionId>(() => loadFromStorage('bibleVersion', 'krv'));
@@ -574,7 +574,7 @@ export default function App() {
                     type="text"
                     value={defaultSubtitle}
                     onChange={(e) => setDefaultSubtitle(e.target.value)}
-                    placeholder="예: 주일 낮 예배"
+                    placeholder="예: 첫번째 주제"
                     className="w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
                   />
                 </div>
@@ -658,7 +658,7 @@ export default function App() {
                                   type="text"
                                   value={p.subtitle}
                                   onChange={(e) => handleUpdatePassage(p.id, { subtitle: e.target.value })}
-                                  placeholder="예: 주일 낮 예배"
+                                  placeholder="예: 첫번째 주제"
                                   className="w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
                                 />
                               </div>
