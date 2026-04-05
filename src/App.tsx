@@ -63,11 +63,11 @@ interface PPTSettings {
 
 const DEFAULT_SETTINGS: PPTSettings = {
   ratio: '16:9',
-  bgColor: '#0F172A',
-  textColor: '#F1F5F9',
-  titleColor: '#93C5FD',
-  subtitleColor: '#94A3B8',
-  verseNumColor: '#60A5FA',
+  bgColor: '#F8FAFC',
+  textColor: '#1E293B',
+  titleColor: '#1D4ED8',
+  subtitleColor: '#64748B',
+  verseNumColor: '#3B82F6',
   bodyFontFamily: 'Malgun Gothic',
   titleFontFamily: 'Malgun Gothic',
   subtitleFontFamily: 'Malgun Gothic',
