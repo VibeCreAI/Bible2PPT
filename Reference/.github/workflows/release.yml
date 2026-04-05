@@ -1,0 +1,30 @@
+name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Whether to run semantic release in `dry-run` mode. It will override the dryRun attribute in your configuration file'
+        required: false
+        default: 'false'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          token: ${{ secrets.PERSONAL_TOKEN }}
+
+      # TODO: CI
+
+      - uses: cycjimmy/semantic-release-action@v2
+        with:
+          semantic_version: 18
+          branch: main
+          extra_plugins: |
+            @semantic-release/changelog
+            @semantic-release/git
+          dry_run: ${{ github.event.inputs.dry_run }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.PERSONAL_TOKEN }}
