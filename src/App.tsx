@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import pptxgen from 'pptxgenjs';
 import { Download, Settings, FileText, MonitorPlay, Type, Palette, LayoutTemplate, Image as ImageIcon, Plus, X, BookOpen, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
@@ -149,6 +149,22 @@ export default function App() {
   const [endVerse, setEndVerse] = useState<number>(() => loadFromStorage('endVerse', 16));
   const [isLoadingVerses, setIsLoadingVerses] = useState(false);
 
+  // Measure preview container width to compute accurate font scale
+  const previewContainerRef = useRef<HTMLDivElement>(null);
+  const [previewWidth, setPreviewWidth] = useState(576);
+  useEffect(() => {
+    const el = previewContainerRef.current;
+    if (!el) return;
+    const obs = new ResizeObserver(entries => {
+      const w = entries[0]?.contentRect.width;
+      if (w) setPreviewWidth(w);
+    });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+  // PPT slide is 10 inches = 720pt wide; scale preview px to match proportionally
+  const previewFontScale = previewWidth / 720;
+
   // Persist to localStorage on change
   useEffect(() => { saveToStorage('settings', settings); }, [settings]);
   useEffect(() => { saveToStorage('passages', passages); }, [passages]);
@@ -177,7 +193,8 @@ export default function App() {
 
     for (const verse of parsedVerses) {
       const textLen = verse.text.length + (verse.verseNum ? 2 : 0);
-      const verseLines = Math.ceil(textLen / charsPerLine) + 0.5;
+      // +0.35 accounts for the spacer line added between verses in the PPT
+      const verseLines = Math.ceil(textLen / charsPerLine) + 0.35;
       if (usedLines + verseLines > linesPerSlide && currentGroup.length > 0) {
         groups.push({ verses: currentGroup });
         currentGroup = [verse];
@@ -300,10 +317,14 @@ export default function App() {
     setPassages(prev => prev.map(p => p.id === id ? { ...p, isExpanded: !p.isExpanded } : p));
   }, []);
 
-  const handleGeneratePPT = () => {
+  const handleGeneratePPT = async () => {
     if (passages.length === 0) return;
     const pptx = new pptxgen();
     pptx.layout = settings.ratio === '16:9' ? 'LAYOUT_16x9' : 'LAYOUT_4x3';
+
+    // Title/subtitle box height based on font size
+    const titleH = Math.max(0.4, (settings.titleFontSize / 72) * 1.8);
+    const subtitleH = Math.max(0.35, (settings.subtitleFontSize / 72) * 1.8);
 
     const addSlideContent = (slide: ReturnType<typeof pptx.addSlide>, pTitle: string, pSubtitle: string, slideVerses: VerseData[], valign: 'middle' | 'top') => {
       if (settings.bgImage) {
@@ -311,30 +332,60 @@ export default function App() {
       } else {
         slide.background = { color: settings.bgColor.replace('#', '') };
       }
+      // Use '5%' / '90%' to exactly match the web preview layout
       if (pTitle) {
         slide.addText(pTitle, {
-          x: 0.05, y: `${settings.titleY}%`, w: '90%', h: 0.15,
+          x: '5%', y: `${settings.titleY}%`, w: '90%', h: titleH,
           fontSize: settings.titleFontSize, color: settings.titleColor.replace('#', ''),
           fontFace: settings.titleFontFamily, bold: true, align: settings.titleAlign, valign: 'top',
         });
       }
       if (pSubtitle) {
         slide.addText(pSubtitle, {
-          x: 0.05, y: `${settings.subtitleY}%`, w: '90%', h: 0.15,
+          x: '5%', y: `${settings.subtitleY}%`, w: '90%', h: subtitleH,
           fontSize: settings.subtitleFontSize, color: settings.subtitleColor.replace('#', ''),
           fontFace: settings.subtitleFontFamily, bold: false, align: 'right', valign: 'top',
         });
       }
       const textElements: any[] = [];
-      slideVerses.forEach((verse) => {
+      slideVerses.forEach((verse, index) => {
+        const isLastVerse = index === slideVerses.length - 1;
         if (verse.verseNum) {
-          textElements.push({ text: `${verse.verseNum} `, options: { fontSize: settings.fontSize * 0.6, color: settings.verseNumColor.replace('#', ''), superscript: true } });
+          // superscript: true matches the HTML <sup> rendering in the web preview
+          textElements.push({
+            text: `${verse.verseNum} `,
+            options: {
+              fontSize: settings.fontSize,
+              color: settings.verseNumColor.replace('#', ''),
+              fontFace: settings.bodyFontFamily,
+              superscript: true,
+            },
+          });
         }
-        textElements.push({ text: verse.text, options: { fontSize: settings.fontSize, color: settings.textColor.replace('#', '') } });
+        textElements.push({
+          text: verse.text,
+          options: {
+            fontSize: settings.fontSize,
+            color: settings.textColor.replace('#', ''),
+            fontFace: settings.bodyFontFamily,
+            breakLine: true, // always break after verse text
+          },
+        });
+        // Add a small spacer line between verses (matches preview's space-y-4)
+        if (!isLastVerse) {
+          textElements.push({
+            text: ' ',
+            options: {
+              fontSize: settings.fontSize * 0.35,
+              fontFace: settings.bodyFontFamily,
+              breakLine: true,
+            },
+          });
+        }
       });
       slide.addText(textElements, {
-        x: 0.05, y: `${settings.bodyY}%`, w: '90%', h: `${95 - settings.bodyY}%`,
-        fontFace: settings.bodyFontFamily, align: settings.textAlign, valign, breakLine: true,
+        x: '5%', y: `${settings.bodyY}%`, w: '90%', h: `${95 - settings.bodyY}%`,
+        fontFace: settings.bodyFontFamily, align: settings.textAlign, valign,
       });
     };
 
@@ -350,7 +401,7 @@ export default function App() {
     }
 
     const firstName = passages[0]?.title || 'Bible_Verses';
-    pptx.writeFile({ fileName: `${firstName}.pptx` });
+    await pptx.writeFile({ fileName: `${firstName}.pptx` });
   };
 
   const updateSetting = <K extends keyof PPTSettings>(key: K, value: PPTSettings[K]) => {
@@ -783,6 +834,7 @@ export default function App() {
           {/* Preview Slide */}
           <div className="bg-gray-200 rounded-2xl p-4 flex items-center justify-center overflow-hidden border border-gray-300 shadow-inner">
             <div
+              ref={previewContainerRef}
               className="relative shadow-2xl transition-all duration-300 bg-cover bg-center"
               style={{
                 width: '100%',
@@ -800,7 +852,7 @@ export default function App() {
                   )}
                   style={{ top: `${settings.titleY}%`, color: settings.titleColor, fontFamily: `"${settings.titleFontFamily}", sans-serif` }}
                 >
-                  <span className="font-bold leading-tight" style={{ fontSize: `${settings.titleFontSize * 0.8}px` }}>
+                  <span className="font-bold leading-tight" style={{ fontSize: `${settings.titleFontSize * previewFontScale}px` }}>
                     {currentPreviewSlide.title}
                   </span>
                 </div>
@@ -812,7 +864,7 @@ export default function App() {
                   className="absolute w-[90%] left-[5%] flex flex-col items-end text-right"
                   style={{ top: `${settings.subtitleY}%`, color: settings.subtitleColor, fontFamily: `"${settings.subtitleFontFamily}", sans-serif` }}
                 >
-                  <span className="leading-tight" style={{ fontSize: `${settings.subtitleFontSize * 0.8}px` }}>
+                  <span className="leading-tight" style={{ fontSize: `${settings.subtitleFontSize * previewFontScale}px` }}>
                     {currentPreviewSlide.subtitle}
                   </span>
                 </div>
@@ -833,11 +885,11 @@ export default function App() {
                   overflow: 'hidden',
                 }}
               >
-                <div className="space-y-4">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: `${settings.fontSize * previewFontScale * 0.35}px` }}>
                   {currentPreviewSlide?.verses.map((verse, idx) => (
-                    <p key={idx} className="leading-snug break-keep" style={{ fontSize: `${settings.fontSize * 0.8}px`, lineHeight: 1.4 }}>
+                    <p key={idx} className="leading-snug break-keep" style={{ fontSize: `${settings.fontSize * previewFontScale}px`, lineHeight: 1.4, margin: 0 }}>
                       {verse.verseNum && (
-                        <sup className="mr-1.5 font-semibold" style={{ color: settings.verseNumColor, fontSize: '60%', top: '-0.4em' }}>
+                        <sup className="mr-1" style={{ color: settings.verseNumColor, fontSize: '65%' }}>
                           {verse.verseNum}
                         </sup>
                       )}
