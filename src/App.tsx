@@ -49,16 +49,24 @@ interface PPTSettings {
   bodyFontFamily: string;
   titleFontFamily: string;
   subtitleFontFamily: string;
+  verseNumFontFamily: string;
+  verseNumBold: boolean;
+  bodyBold: boolean;
+  titleBold: boolean;
+  subtitleBold: boolean;
+  verseNumFontSize: number;
+  verseLineSpacing: number;
+  verseGapPt: number;
   fontSize: number;
   titleFontSize: number;
   subtitleFontSize: number;
-  textAlign: 'left' | 'center' | 'right';
-  titleAlign: 'left' | 'center' | 'right';
+  textAlign: 'left' | 'center' | 'right' | 'justify';
+  titleAlign: 'left' | 'center' | 'right' | 'justify';
   bgImage: string | null;
   titleY: number;
   subtitleY: number;
   bodyY: number;
-  slideSplitMode: 'per_verse' | 'auto_page';
+  slideSplitMode: 'per_verse' | 'per_2_verses' | 'per_3_verses' | 'per_4_verses' | 'per_5_verses' | 'auto_page';
 }
 
 const DEFAULT_SETTINGS: PPTSettings = {
@@ -71,6 +79,14 @@ const DEFAULT_SETTINGS: PPTSettings = {
   bodyFontFamily: 'Malgun Gothic',
   titleFontFamily: 'Malgun Gothic',
   subtitleFontFamily: 'Malgun Gothic',
+  verseNumFontFamily: 'Malgun Gothic',
+  verseNumBold: false,
+  bodyBold: false,
+  titleBold: true,
+  subtitleBold: false,
+  verseNumFontSize: 36,
+  verseLineSpacing: 1.4,
+  verseGapPt: 12,
   fontSize: 36,
   titleFontSize: 26,
   subtitleFontSize: 16,
@@ -107,6 +123,18 @@ const FONT_OPTIONS = [
   { label: '돋움 (Dotum)', value: 'Dotum' },
   { label: '굴림 (Gulim)', value: 'Gulim' },
 ];
+
+const getAlignClasses = (align: PPTSettings['textAlign']) => {
+  if (align === 'center') return 'items-center text-center';
+  if (align === 'right') return 'items-end text-right';
+  if (align === 'justify') return 'items-stretch text-justify';
+  return 'items-start text-left';
+};
+
+const getTextAlignStyle = (align: PPTSettings['textAlign']): React.CSSProperties['textAlign'] => {
+  if (align === 'justify') return 'justify';
+  return align;
+};
 
 function parseVerses(rawText: string): VerseData[] {
   const lines = rawText.split('\n');
@@ -149,7 +177,10 @@ function saveToStorage(key: string, value: unknown) {
 }
 
 export default function App() {
-  const [settings, setSettings] = useState<PPTSettings>(() => loadFromStorage('settings', DEFAULT_SETTINGS));
+  const [settings, setSettings] = useState<PPTSettings>(() => ({
+    ...DEFAULT_SETTINGS,
+    ...loadFromStorage<Partial<PPTSettings>>('settings', {}),
+  }));
   const [activeTab, setActiveTab] = useState<'input' | 'settings'>('input');
   const [previewSlideIndex, setPreviewSlideIndex] = useState(0);
 
@@ -192,14 +223,28 @@ export default function App() {
   useEffect(() => { saveToStorage('endVerse', endVerse); }, [endVerse]);
 
   // Paginate parsed verses into SlideData groups
-  const paginateVerses = useCallback((parsedVerses: VerseData[], mode: 'per_verse' | 'auto_page'): SlideData[] => {
+  const paginateVerses = useCallback((parsedVerses: VerseData[], mode: PPTSettings['slideSplitMode']): SlideData[] => {
     if (parsedVerses.length === 0) return [{ verses: [{ verseNum: '', text: '구절을 입력해주세요.' }] }];
-    if (mode === 'per_verse') return parsedVerses.map(v => ({ verses: [v] }));
+    const fixedChunkSizeByMode: Partial<Record<PPTSettings['slideSplitMode'], number>> = {
+      per_verse: 1,
+      per_2_verses: 2,
+      per_3_verses: 3,
+      per_4_verses: 4,
+      per_5_verses: 5,
+    };
+    const fixedChunkSize = fixedChunkSizeByMode[mode];
+    if (fixedChunkSize) {
+      const groups: SlideData[] = [];
+      for (let i = 0; i < parsedVerses.length; i += fixedChunkSize) {
+        groups.push({ verses: parsedVerses.slice(i, i + fixedChunkSize) });
+      }
+      return groups;
+    }
 
     const slideHeightIn = settings.ratio === '16:9' ? 5.625 : 7.5;
     const bodyHeightIn = slideHeightIn * (95 - settings.bodyY) / 100;
     const charWidthIn = (settings.fontSize * 0.58) / 72;
-    const lineHeightIn = (settings.fontSize * 1.45) / 72;
+    const lineHeightIn = (settings.fontSize * settings.verseLineSpacing) / 72;
     const charsPerLine = Math.max(1, Math.floor(9 / charWidthIn));
     const linesPerSlide = Math.max(1, Math.floor(bodyHeightIn / lineHeightIn));
 
@@ -209,8 +254,8 @@ export default function App() {
 
     for (const verse of parsedVerses) {
       const textLen = verse.text.length + (verse.verseNum ? 2 : 0);
-      // +0.35 accounts for the spacer line added between verses in the PPT
-      const verseLines = Math.ceil(textLen / charsPerLine) + 0.35;
+      // Add estimated extra lines for verse-to-verse spacer (pt -> line count)
+      const verseLines = Math.ceil(textLen / charsPerLine) + (settings.verseGapPt / settings.fontSize);
       if (usedLines + verseLines > linesPerSlide && currentGroup.length > 0) {
         groups.push({ verses: currentGroup });
         currentGroup = [verse];
@@ -222,7 +267,7 @@ export default function App() {
     }
     if (currentGroup.length > 0) groups.push({ verses: currentGroup });
     return groups;
-  }, [settings.ratio, settings.bodyY, settings.fontSize]);
+  }, [settings.ratio, settings.bodyY, settings.fontSize, settings.verseLineSpacing, settings.verseGapPt]);
 
   // All slides across all passages for preview
   const allSlides = useMemo((): FlatSlide[] => {
@@ -353,28 +398,28 @@ export default function App() {
         slide.addText(pTitle, {
           x: '5%', y: `${settings.titleY}%`, w: '90%', h: titleH,
           fontSize: settings.titleFontSize, color: settings.titleColor.replace('#', ''),
-          fontFace: settings.titleFontFamily, bold: true, align: settings.titleAlign, valign: 'top',
+          fontFace: settings.titleFontFamily, bold: settings.titleBold, align: settings.titleAlign, valign: 'top',
         });
       }
       if (pSubtitle) {
         slide.addText(pSubtitle, {
           x: '5%', y: `${settings.subtitleY}%`, w: '90%', h: subtitleH,
           fontSize: settings.subtitleFontSize, color: settings.subtitleColor.replace('#', ''),
-          fontFace: settings.subtitleFontFamily, bold: false, align: 'right', valign: 'top',
+          fontFace: settings.subtitleFontFamily, bold: settings.subtitleBold, align: 'right', valign: 'top',
         });
       }
       const textElements: any[] = [];
       slideVerses.forEach((verse, index) => {
         const isLastVerse = index === slideVerses.length - 1;
         if (verse.verseNum) {
-          // superscript: true matches the HTML <sup> rendering in the web preview
+          // Keep verse number inline so larger verse sizes do not shift the first line upward
           textElements.push({
             text: `${verse.verseNum} `,
             options: {
-              fontSize: settings.fontSize,
+              fontSize: settings.verseNumFontSize,
               color: settings.verseNumColor.replace('#', ''),
-              fontFace: settings.bodyFontFamily,
-              superscript: true,
+              fontFace: settings.verseNumFontFamily,
+              bold: settings.verseNumBold,
             },
           });
         }
@@ -384,25 +429,29 @@ export default function App() {
             fontSize: settings.fontSize,
             color: settings.textColor.replace('#', ''),
             fontFace: settings.bodyFontFamily,
+            bold: settings.bodyBold,
             breakLine: true, // always break after verse text
           },
         });
-        // Add a small spacer line between verses (matches preview's space-y-4)
-        if (!isLastVerse) {
+        // Adjustable spacer between verses (independent from within-verse line spacing)
+        if (!isLastVerse && settings.verseGapPt > 0) {
           textElements.push({
             text: ' ',
             options: {
-              fontSize: settings.fontSize * 0.35,
+              fontSize: settings.verseGapPt,
               fontFace: settings.bodyFontFamily,
+              bold: settings.bodyBold,
               breakLine: true,
             },
           });
         }
       });
-      slide.addText(textElements, {
+      const bodyTextOptions: any = {
         x: '5%', y: `${settings.bodyY}%`, w: '90%', h: `${95 - settings.bodyY}%`,
-        fontFace: settings.bodyFontFamily, align: settings.textAlign, valign,
-      });
+        fontFace: settings.bodyFontFamily, bold: settings.bodyBold, align: settings.textAlign, valign,
+        lineSpacingMultiple: settings.verseLineSpacing,
+      };
+      slide.addText(textElements, bodyTextOptions);
     };
 
     for (const passage of passages) {
@@ -708,6 +757,10 @@ export default function App() {
                     <select value={settings.slideSplitMode} onChange={(e) => updateSetting('slideSplitMode', e.target.value as any)}
                       className="w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none">
                       <option value="per_verse">1절씩 나누기</option>
+                      <option value="per_2_verses">2절씩 나누기</option>
+                      <option value="per_3_verses">3절씩 나누기</option>
+                      <option value="per_4_verses">4절씩 나누기</option>
+                      <option value="per_5_verses">5절씩 나누기</option>
                       <option value="auto_page">최대한 채우고 넘기기</option>
                     </select>
                   </div>
@@ -718,6 +771,7 @@ export default function App() {
                       <option value="left">왼쪽 정렬</option>
                       <option value="center">가운데 정렬</option>
                       <option value="right">오른쪽 정렬</option>
+                      <option value="justify">좌우 정렬</option>
                     </select>
                   </div>
                   <div>
@@ -727,6 +781,7 @@ export default function App() {
                       <option value="center">가운데 정렬</option>
                       <option value="left">왼쪽 정렬</option>
                       <option value="right">오른쪽 정렬</option>
+                      <option value="justify">좌우 정렬</option>
                     </select>
                   </div>
                 </div>
@@ -737,7 +792,7 @@ export default function App() {
               <div className="space-y-4">
                 <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2 uppercase tracking-wider">
                   <LayoutTemplate className="w-4 h-4 text-gray-500" />
-                  위치 조정 (상하)
+                  위치 조정
                 </h3>
                 <div className="space-y-3">
                   {([['제목 위쪽 여백', 'titleY', 0, 50], ['소제목 위쪽 여백', 'subtitleY', 0, 50], ['본문 위쪽 여백', 'bodyY', 5, 80]] as const).map(([label, key, min, max]) => (
@@ -751,6 +806,35 @@ export default function App() {
                         className="w-full accent-blue-600" />
                     </div>
                   ))}
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <label className="text-xs font-medium text-gray-600">절 내부 줄간격</label>
+                      <span className="text-xs text-gray-500">{settings.verseLineSpacing.toFixed(2)}x</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={1}
+                      max={2.2}
+                      step={0.05}
+                      value={settings.verseLineSpacing}
+                      onChange={(e) => updateSetting('verseLineSpacing', parseFloat(e.target.value))}
+                      className="w-full accent-blue-600"
+                    />
+                  </div>
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <label className="text-xs font-medium text-gray-600">절 간 간격</label>
+                      <span className="text-xs text-gray-500">{settings.verseGapPt}pt</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={40}
+                      value={settings.verseGapPt}
+                      onChange={(e) => updateSetting('verseGapPt', parseInt(e.target.value))}
+                      className="w-full accent-blue-600"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -781,8 +865,8 @@ export default function App() {
                   글꼴 및 크기
                 </h3>
                 <div>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    {([['제목 글꼴', 'titleFontFamily'], ['소제목 글꼴', 'subtitleFontFamily'], ['본문 글꼴', 'bodyFontFamily']] as const).map(([label, key]) => (
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    {([['제목 글꼴', 'titleFontFamily'], ['소제목 글꼴', 'subtitleFontFamily'], ['본문 글꼴', 'bodyFontFamily'], ['절 번호 글꼴', 'verseNumFontFamily']] as const).map(([label, key]) => (
                       <div key={key}>
                         <label className="block text-xs font-medium text-gray-600 mb-1.5">{label}</label>
                         <select value={settings[key]} onChange={(e) => updateSetting(key, e.target.value)}
@@ -792,10 +876,23 @@ export default function App() {
                       </div>
                     ))}
                   </div>
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mt-3">
+                    {([['제목 볼드', 'titleBold'], ['소제목 볼드', 'subtitleBold'], ['본문 볼드', 'bodyBold'], ['절 번호 볼드', 'verseNumBold']] as const).map(([label, key]) => (
+                      <label key={key} className="flex items-center gap-2 px-3 py-2 bg-gray-50 border border-gray-300 rounded-lg text-sm text-gray-700">
+                        <input
+                          type="checkbox"
+                          checked={settings[key]}
+                          onChange={(e) => updateSetting(key, e.target.checked)}
+                          className="accent-blue-600"
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
                   <p className="text-[11px] text-gray-500 mt-1">* PPT를 열 PC에 설치된 폰트여야 정상적으로 보입니다.</p>
                 </div>
                 <div className="space-y-3">
-                  {([['본문 크기', 'fontSize', 20, 80], ['제목 크기', 'titleFontSize', 16, 60], ['소제목 크기', 'subtitleFontSize', 12, 40]] as const).map(([label, key, min, max]) => (
+                  {([['본문 크기', 'fontSize', 20, 80], ['절 번호 크기', 'verseNumFontSize', 10, 60], ['제목 크기', 'titleFontSize', 16, 60], ['소제목 크기', 'subtitleFontSize', 12, 40]] as const).map(([label, key, min, max]) => (
                     <div key={key}>
                       <div className="flex justify-between mb-1">
                         <label className="text-xs font-medium text-gray-600">{label}</label>
@@ -864,11 +961,11 @@ export default function App() {
                 <div
                   className={cn(
                     "absolute w-[90%] left-[5%] flex flex-col",
-                    settings.titleAlign === 'center' ? 'items-center text-center' : settings.titleAlign === 'right' ? 'items-end text-right' : 'items-start text-left'
+                    getAlignClasses(settings.titleAlign)
                   )}
-                  style={{ top: `${settings.titleY}%`, color: settings.titleColor, fontFamily: `"${settings.titleFontFamily}", sans-serif` }}
+                  style={{ top: `${settings.titleY}%`, color: settings.titleColor, fontFamily: `"${settings.titleFontFamily}", sans-serif`, textAlign: getTextAlignStyle(settings.titleAlign) }}
                 >
-                  <span className="font-bold leading-tight" style={{ fontSize: `${settings.titleFontSize * previewFontScale}px` }}>
+                  <span className="leading-tight" style={{ fontSize: `${settings.titleFontSize * previewFontScale}px`, fontWeight: settings.titleBold ? 700 : 400 }}>
                     {currentPreviewSlide.title}
                   </span>
                 </div>
@@ -880,7 +977,7 @@ export default function App() {
                   className="absolute w-[90%] left-[5%] flex flex-col items-end text-right"
                   style={{ top: `${settings.subtitleY}%`, color: settings.subtitleColor, fontFamily: `"${settings.subtitleFontFamily}", sans-serif` }}
                 >
-                  <span className="leading-tight" style={{ fontSize: `${settings.subtitleFontSize * previewFontScale}px` }}>
+                  <span className="leading-tight" style={{ fontSize: `${settings.subtitleFontSize * previewFontScale}px`, fontWeight: settings.subtitleBold ? 700 : 400 }}>
                     {currentPreviewSlide.subtitle}
                   </span>
                 </div>
@@ -890,7 +987,7 @@ export default function App() {
               <div
                 className={cn(
                   "absolute w-[90%] left-[5%] flex flex-col",
-                  settings.textAlign === 'center' ? 'items-center text-center' : settings.textAlign === 'right' ? 'items-end text-right' : 'items-start text-left',
+                  getAlignClasses(settings.textAlign),
                   settings.slideSplitMode === 'auto_page' ? 'justify-start' : 'justify-center'
                 )}
                 style={{
@@ -898,16 +995,17 @@ export default function App() {
                   height: `${95 - settings.bodyY}%`,
                   color: settings.textColor,
                   fontFamily: `"${settings.bodyFontFamily}", sans-serif`,
+                  textAlign: getTextAlignStyle(settings.textAlign),
                   overflow: 'hidden',
                 }}
               >
-                <div style={{ display: 'flex', flexDirection: 'column', gap: `${settings.fontSize * previewFontScale * 0.35}px` }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: `${settings.verseGapPt * previewFontScale}px` }}>
                   {currentPreviewSlide?.verses.map((verse, idx) => (
-                    <p key={idx} className="leading-snug break-keep" style={{ fontSize: `${settings.fontSize * previewFontScale}px`, lineHeight: 1.4, margin: 0 }}>
+                    <p key={idx} className="break-keep" style={{ fontSize: `${settings.fontSize * previewFontScale}px`, lineHeight: settings.verseLineSpacing, margin: 0, fontWeight: settings.bodyBold ? 700 : 400 }}>
                       {verse.verseNum && (
-                        <sup className="mr-1" style={{ color: settings.verseNumColor, fontSize: '65%' }}>
+                        <span className="mr-1 inline-block" style={{ color: settings.verseNumColor, fontSize: `${settings.verseNumFontSize * previewFontScale}px`, fontWeight: settings.verseNumBold ? 700 : 400, lineHeight: 1, fontFamily: `"${settings.verseNumFontFamily}", sans-serif` }}>
                           {verse.verseNum}
-                        </sup>
+                        </span>
                       )}
                       {verse.text}
                     </p>
