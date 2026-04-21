@@ -54,6 +54,10 @@ interface PPTSettings {
   bodyBold: boolean;
   titleBold: boolean;
   subtitleBold: boolean;
+  titleTextScale: number;
+  subtitleTextScale: number;
+  bodyTextScale: number;
+  verseNumTextScale: number;
   verseNumFontSize: number;
   verseLineSpacing: number;
   verseGapPt: number;
@@ -85,6 +89,10 @@ const DEFAULT_SETTINGS: PPTSettings = {
   bodyBold: false,
   titleBold: true,
   subtitleBold: false,
+  titleTextScale: 100,
+  subtitleTextScale: 100,
+  bodyTextScale: 100,
+  verseNumTextScale: 100,
   verseNumFontSize: 36,
   verseLineSpacing: 1.4,
   verseGapPt: 12,
@@ -145,10 +153,11 @@ const SLIDE_HEIGHT_BY_RATIO: Record<PPTSettings['ratio'], number> = {
 };
 const BODY_WIDTH_PERCENT = 90;
 const MIN_BODY_HEIGHT_PERCENT = 5;
-const AUTO_PAGE_HEIGHT_SAFETY_IN = 0.12;
+const AUTO_PAGE_HEIGHT_SAFETY_IN = 0.2;
 const CJK_CHAR_WIDTH_RATIO = 0.9;
 const CJK_CHAR_REGEX = /[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF\u3040-\u30FF\u3400-\u9FFF]/;
 const PUNCTUATION_REGEX = /[.,;:!?'"()[\]{}<>/\\|`~@#$%^&*_+=-]/;
+const PPT_POINTS_PER_INCH = 72;
 
 const getBodyHeightPercent = (settings: Pick<PPTSettings, 'bodyY' | 'bodyBottomMargin'>) => (
   Math.max(MIN_BODY_HEIGHT_PERCENT, 100 - settings.bodyY - settings.bodyBottomMargin)
@@ -164,6 +173,126 @@ const getTextWidthUnits = (text: string) => {
     else units += 0.85;
   }
   return units;
+};
+
+const getCharSpacing = (fontSize: number, textScale: number) => (
+  Number((((textScale - 100) / 100) * fontSize * 0.75).toFixed(2))
+);
+
+const getPreviewLetterSpacing = (fontSize: number, textScale: number, previewFontScale: number) => (
+  `${getCharSpacing(fontSize, textScale) * previewFontScale}px`
+);
+
+interface TextMeasureSegment {
+  text: string;
+  fontSize: number;
+  fontFamily: string;
+  bold: boolean;
+  textScale: number;
+}
+
+let textMeasureCanvas: HTMLCanvasElement | null = null;
+let verseMeasureRoot: HTMLDivElement | null = null;
+
+const getTextMeasureContext = () => {
+  if (typeof document === 'undefined') return null;
+  textMeasureCanvas ??= document.createElement('canvas');
+  return textMeasureCanvas.getContext('2d');
+};
+
+const getFallbackTextWidth = (text: string, fontSize: number, textScale: number) => (
+  getTextWidthUnits(text) * fontSize * CJK_CHAR_WIDTH_RATIO * textScale / 100
+);
+
+const measureTextWidth = (segment: TextMeasureSegment, text: string) => {
+  const ctx = getTextMeasureContext();
+  if (!ctx) return getFallbackTextWidth(text, segment.fontSize, segment.textScale);
+  ctx.font = `${segment.bold ? 700 : 400} ${segment.fontSize}px "${segment.fontFamily}", sans-serif`;
+  return ctx.measureText(text).width;
+};
+
+const estimateWrappedLineCount = (segments: TextMeasureSegment[], maxWidth: number) => {
+  let lineCount = 1;
+  let currentLineWidth = 0;
+
+  for (const segment of segments) {
+    const chars = Array.from(segment.text);
+    const charSpacing = getCharSpacing(segment.fontSize, segment.textScale);
+    for (const char of chars) {
+      if (char === '\n') {
+        lineCount += 1;
+        currentLineWidth = 0;
+        continue;
+      }
+
+      const spacing = currentLineWidth > 0 ? charSpacing : 0;
+      const charWidth = Math.max(1, measureTextWidth(segment, char) + spacing);
+      if (currentLineWidth > 0 && currentLineWidth + charWidth > maxWidth) {
+        lineCount += 1;
+        currentLineWidth = Math.max(1, measureTextWidth(segment, char));
+      } else {
+        currentLineWidth += charWidth;
+      }
+    }
+  }
+
+  return lineCount;
+};
+
+const getVerseMeasureRoot = () => {
+  if (typeof document === 'undefined') return null;
+  if (!verseMeasureRoot) {
+    verseMeasureRoot = document.createElement('div');
+    verseMeasureRoot.style.position = 'absolute';
+    verseMeasureRoot.style.left = '-10000px';
+    verseMeasureRoot.style.top = '-10000px';
+    verseMeasureRoot.style.visibility = 'hidden';
+    verseMeasureRoot.style.pointerEvents = 'none';
+    verseMeasureRoot.style.zIndex = '-1';
+    document.body.appendChild(verseMeasureRoot);
+  }
+  return verseMeasureRoot;
+};
+
+const measureVerseHeightIn = (
+  verse: VerseData,
+  settings: PPTSettings,
+  bodyWidthPt: number
+) => {
+  const root = getVerseMeasureRoot();
+  if (!root) return null;
+
+  root.textContent = '';
+  root.style.width = `${bodyWidthPt}px`;
+
+  const paragraph = document.createElement('p');
+  paragraph.className = 'break-keep';
+  paragraph.style.fontSize = `${settings.fontSize}px`;
+  paragraph.style.lineHeight = `${settings.verseLineSpacing}`;
+  paragraph.style.margin = '0';
+  paragraph.style.fontWeight = settings.bodyBold ? '700' : '400';
+  paragraph.style.fontFamily = `"${settings.bodyFontFamily}", sans-serif`;
+  paragraph.style.letterSpacing = `${getCharSpacing(settings.fontSize, settings.bodyTextScale)}px`;
+  paragraph.style.whiteSpace = 'normal';
+
+  if (verse.verseNum) {
+    const verseNumber = document.createElement('span');
+    verseNumber.className = 'mr-1 inline-block';
+    verseNumber.textContent = verse.verseNum;
+    verseNumber.style.display = 'inline-block';
+    verseNumber.style.marginRight = '4px';
+    verseNumber.style.fontSize = `${settings.verseNumFontSize}px`;
+    verseNumber.style.fontWeight = settings.verseNumBold ? '700' : '400';
+    verseNumber.style.lineHeight = '1';
+    verseNumber.style.fontFamily = `"${settings.verseNumFontFamily}", sans-serif`;
+    verseNumber.style.letterSpacing = `${getCharSpacing(settings.verseNumFontSize, settings.verseNumTextScale)}px`;
+    paragraph.appendChild(verseNumber);
+  }
+
+  paragraph.appendChild(document.createTextNode(verse.text));
+  root.appendChild(paragraph);
+
+  return paragraph.getBoundingClientRect().height / PPT_POINTS_PER_INCH;
 };
 
 function parseVerses(rawText: string): VerseData[] {
@@ -273,18 +402,38 @@ export default function App() {
 
     const slideHeightIn = SLIDE_HEIGHT_BY_RATIO[settings.ratio];
     const bodyHeightIn = slideHeightIn * getBodyHeightPercent(settings) / 100;
-    const usableBodyHeightIn = Math.max(0.1, bodyHeightIn - AUTO_PAGE_HEIGHT_SAFETY_IN);
-    const bodyWidthIn = SLIDE_WIDTH_IN * BODY_WIDTH_PERCENT / 100;
-    const cjkCharWidthIn = (settings.fontSize * CJK_CHAR_WIDTH_RATIO) / 72;
-    const maxUnitsPerLine = Math.max(1, bodyWidthIn / cjkCharWidthIn);
-    const bodyLineHeightIn = (settings.fontSize * settings.verseLineSpacing) / 72;
-    const verseGapIn = (settings.verseGapPt * Math.max(1, settings.verseLineSpacing)) / 72;
+    const bodyWidthPt = SLIDE_WIDTH_IN * PPT_POINTS_PER_INCH * BODY_WIDTH_PERCENT / 100;
+    const bodyLineHeightIn = (settings.fontSize * settings.verseLineSpacing) / PPT_POINTS_PER_INCH;
+    const usableBodyHeightIn = Math.max(
+      0.1,
+      bodyHeightIn - Math.max(AUTO_PAGE_HEIGHT_SAFETY_IN, bodyLineHeightIn * 0.65)
+    );
+    const verseGapIn = settings.verseGapPt / PPT_POINTS_PER_INCH;
 
     const estimateVerseHeightIn = (verse: VerseData) => {
-      const text = `${verse.verseNum ? `${verse.verseNum} ` : ''}${verse.text}`;
-      const lineCount = Math.max(1, Math.ceil(getTextWidthUnits(text) / maxUnitsPerLine));
+      const measuredHeightIn = measureVerseHeightIn(verse, settings, bodyWidthPt);
+      if (measuredHeightIn) return measuredHeightIn;
+
+      const segments: TextMeasureSegment[] = [];
+      if (verse.verseNum) {
+        segments.push({
+          text: `${verse.verseNum} `,
+          fontSize: settings.verseNumFontSize,
+          fontFamily: settings.verseNumFontFamily,
+          bold: settings.verseNumBold,
+          textScale: settings.verseNumTextScale,
+        });
+      }
+      segments.push({
+        text: verse.text,
+        fontSize: settings.fontSize,
+        fontFamily: settings.bodyFontFamily,
+        bold: settings.bodyBold,
+        textScale: settings.bodyTextScale,
+      });
+      const lineCount = estimateWrappedLineCount(segments, bodyWidthPt);
       const firstLineHeightIn = verse.verseNum
-        ? Math.max(bodyLineHeightIn, settings.verseNumFontSize / 72)
+        ? Math.max(bodyLineHeightIn, settings.verseNumFontSize / PPT_POINTS_PER_INCH)
         : bodyLineHeightIn;
       return firstLineHeightIn + Math.max(0, lineCount - 1) * bodyLineHeightIn;
     };
@@ -312,7 +461,13 @@ export default function App() {
     settings.bodyY,
     settings.bodyBottomMargin,
     settings.fontSize,
+    settings.bodyFontFamily,
+    settings.bodyBold,
+    settings.bodyTextScale,
     settings.verseNumFontSize,
+    settings.verseNumFontFamily,
+    settings.verseNumBold,
+    settings.verseNumTextScale,
     settings.verseLineSpacing,
     settings.verseGapPt,
   ]);
@@ -447,6 +602,8 @@ export default function App() {
           x: '5%', y: `${settings.titleY}%`, w: '90%', h: titleH,
           fontSize: settings.titleFontSize, color: settings.titleColor.replace('#', ''),
           fontFace: settings.titleFontFamily, bold: settings.titleBold, align: settings.titleAlign, valign: 'top',
+          charSpacing: getCharSpacing(settings.titleFontSize, settings.titleTextScale),
+          margin: 0,
         });
       }
       if (pSubtitle) {
@@ -454,6 +611,8 @@ export default function App() {
           x: '5%', y: `${settings.subtitleY}%`, w: '90%', h: subtitleH,
           fontSize: settings.subtitleFontSize, color: settings.subtitleColor.replace('#', ''),
           fontFace: settings.subtitleFontFamily, bold: settings.subtitleBold, align: 'right', valign: 'top',
+          charSpacing: getCharSpacing(settings.subtitleFontSize, settings.subtitleTextScale),
+          margin: 0,
         });
       }
       const textElements: any[] = [];
@@ -468,6 +627,7 @@ export default function App() {
               color: settings.verseNumColor.replace('#', ''),
               fontFace: settings.verseNumFontFamily,
               bold: settings.verseNumBold,
+              charSpacing: getCharSpacing(settings.verseNumFontSize, settings.verseNumTextScale),
             },
           });
         }
@@ -478,6 +638,7 @@ export default function App() {
             color: settings.textColor.replace('#', ''),
             fontFace: settings.bodyFontFamily,
             bold: settings.bodyBold,
+            charSpacing: getCharSpacing(settings.fontSize, settings.bodyTextScale),
             breakLine: true, // always break after verse text
           },
         });
@@ -498,6 +659,7 @@ export default function App() {
         x: '5%', y: `${settings.bodyY}%`, w: '90%', h: `${getBodyHeightPercent(settings)}%`,
         fontFace: settings.bodyFontFamily, bold: settings.bodyBold, align: settings.textAlign, valign,
         lineSpacingMultiple: settings.verseLineSpacing,
+        margin: 0,
       };
       slide.addText(textElements, bodyTextOptions);
     };
@@ -926,28 +1088,40 @@ export default function App() {
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mt-3">
                     {([['제목 볼드', 'titleBold'], ['소제목 볼드', 'subtitleBold'], ['본문 볼드', 'bodyBold'], ['절 번호 볼드', 'verseNumBold']] as const).map(([label, key]) => (
-                      <label key={key} className="flex items-center gap-2 px-3 py-2 bg-gray-50 border border-gray-300 rounded-lg text-sm text-gray-700">
+                      <label key={key} className="flex items-center justify-center gap-1 px-1.5 py-2 bg-gray-50 border border-gray-300 rounded-lg text-xs text-gray-700 whitespace-nowrap">
                         <input
                           type="checkbox"
                           checked={settings[key]}
                           onChange={(e) => updateSetting(key, e.target.checked)}
-                          className="accent-blue-600"
+                          className="w-3.5 h-3.5 accent-blue-600 flex-shrink-0"
                         />
-                        <span>{label}</span>
+                        <span className="whitespace-nowrap leading-none">{label}</span>
                       </label>
                     ))}
                   </div>
                   <p className="text-[11px] text-gray-500 mt-1">* PPT를 열 PC에 설치된 폰트여야 정상적으로 보입니다.</p>
                 </div>
-                <div className="space-y-3">
-                  {([['본문 크기', 'fontSize', 20, 80], ['절 번호 크기', 'verseNumFontSize', 10, 60], ['제목 크기', 'titleFontSize', 16, 60], ['소제목 크기', 'subtitleFontSize', 12, 40]] as const).map(([label, key, min, max]) => (
-                    <div key={key}>
+                <div className="space-y-5">
+                  {([
+                    ['본문', 'fontSize', 20, 80, 'bodyTextScale'],
+                    ['절 번호', 'verseNumFontSize', 10, 60, 'verseNumTextScale'],
+                    ['제목', 'titleFontSize', 16, 60, 'titleTextScale'],
+                    ['소제목', 'subtitleFontSize', 12, 40, 'subtitleTextScale'],
+                  ] as const).map(([label, sizeKey, sizeMin, sizeMax, scaleKey]) => (
+                    <div key={sizeKey} className="space-y-2">
                       <div className="flex justify-between mb-1">
-                        <label className="text-xs font-medium text-gray-600">{label}</label>
-                        <span className="text-xs text-gray-500">{settings[key]}pt</span>
+                        <label className="text-xs font-medium text-gray-600">{label} 크기</label>
+                        <span className="text-xs text-gray-500">{settings[sizeKey]}pt</span>
                       </div>
-                      <input type="range" min={min} max={max} value={settings[key]}
-                        onChange={(e) => updateSetting(key, parseInt(e.target.value))}
+                      <input type="range" min={sizeMin} max={sizeMax} value={settings[sizeKey]}
+                        onChange={(e) => updateSetting(sizeKey, parseInt(e.target.value))}
+                        className="w-full accent-blue-600" />
+                      <div className="flex justify-between mb-1 pt-1">
+                        <label className="text-xs font-medium text-gray-600">{label} 장평</label>
+                        <span className="text-xs text-gray-500">{settings[scaleKey]}%</span>
+                      </div>
+                      <input type="range" min={70} max={130} step={5} value={settings[scaleKey]}
+                        onChange={(e) => updateSetting(scaleKey, parseInt(e.target.value))}
                         className="w-full accent-blue-600" />
                     </div>
                   ))}
@@ -1013,7 +1187,7 @@ export default function App() {
                   )}
                   style={{ top: `${settings.titleY}%`, color: settings.titleColor, fontFamily: `"${settings.titleFontFamily}", sans-serif`, textAlign: getTextAlignStyle(settings.titleAlign) }}
                 >
-                  <span className="leading-tight" style={{ fontSize: `${settings.titleFontSize * previewFontScale}px`, fontWeight: settings.titleBold ? 700 : 400 }}>
+                  <span className="leading-tight" style={{ fontSize: `${settings.titleFontSize * previewFontScale}px`, fontWeight: settings.titleBold ? 700 : 400, letterSpacing: getPreviewLetterSpacing(settings.titleFontSize, settings.titleTextScale, previewFontScale) }}>
                     {currentPreviewSlide.title}
                   </span>
                 </div>
@@ -1025,7 +1199,7 @@ export default function App() {
                   className="absolute w-[90%] left-[5%] flex flex-col items-end text-right"
                   style={{ top: `${settings.subtitleY}%`, color: settings.subtitleColor, fontFamily: `"${settings.subtitleFontFamily}", sans-serif` }}
                 >
-                  <span className="leading-tight" style={{ fontSize: `${settings.subtitleFontSize * previewFontScale}px`, fontWeight: settings.subtitleBold ? 700 : 400 }}>
+                  <span className="leading-tight" style={{ fontSize: `${settings.subtitleFontSize * previewFontScale}px`, fontWeight: settings.subtitleBold ? 700 : 400, letterSpacing: getPreviewLetterSpacing(settings.subtitleFontSize, settings.subtitleTextScale, previewFontScale) }}>
                     {currentPreviewSlide.subtitle}
                   </span>
                 </div>
@@ -1049,9 +1223,9 @@ export default function App() {
               >
                 <div style={{ display: 'flex', flexDirection: 'column', gap: `${settings.verseGapPt * previewFontScale}px` }}>
                   {currentPreviewSlide?.verses.map((verse, idx) => (
-                    <p key={idx} className="break-keep" style={{ fontSize: `${settings.fontSize * previewFontScale}px`, lineHeight: settings.verseLineSpacing, margin: 0, fontWeight: settings.bodyBold ? 700 : 400 }}>
+                    <p key={idx} className="break-keep" style={{ fontSize: `${settings.fontSize * previewFontScale}px`, lineHeight: settings.verseLineSpacing, margin: 0, fontWeight: settings.bodyBold ? 700 : 400, letterSpacing: getPreviewLetterSpacing(settings.fontSize, settings.bodyTextScale, previewFontScale) }}>
                       {verse.verseNum && (
-                        <span className="mr-1 inline-block" style={{ color: settings.verseNumColor, fontSize: `${settings.verseNumFontSize * previewFontScale}px`, fontWeight: settings.verseNumBold ? 700 : 400, lineHeight: 1, fontFamily: `"${settings.verseNumFontFamily}", sans-serif` }}>
+                        <span className="mr-1 inline-block" style={{ color: settings.verseNumColor, fontSize: `${settings.verseNumFontSize * previewFontScale}px`, fontWeight: settings.verseNumBold ? 700 : 400, lineHeight: 1, fontFamily: `"${settings.verseNumFontFamily}", sans-serif`, letterSpacing: getPreviewLetterSpacing(settings.verseNumFontSize, settings.verseNumTextScale, previewFontScale) }}>
                           {verse.verseNum}
                         </span>
                       )}
