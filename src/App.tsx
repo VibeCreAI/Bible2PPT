@@ -154,6 +154,7 @@ const SLIDE_HEIGHT_BY_RATIO: Record<PPTSettings['ratio'], number> = {
 const BODY_WIDTH_PERCENT = 90;
 const MIN_BODY_HEIGHT_PERCENT = 5;
 const AUTO_PAGE_HEIGHT_SAFETY_IN = 0.2;
+const WRAP_WIDTH_SAFETY = 0.94;
 const CJK_CHAR_WIDTH_RATIO = 0.9;
 const CJK_CHAR_REGEX = /[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF\u3040-\u30FF\u3400-\u9FFF]/;
 const PUNCTUATION_REGEX = /[.,;:!?'"()[\]{}<>/\\|`~@#$%^&*_+=-]/;
@@ -191,6 +192,18 @@ interface TextMeasureSegment {
   textScale: number;
 }
 
+interface BodyLineLayout {
+  verseNum?: string;
+  text: string;
+  y: number;
+  h: number;
+}
+
+interface BodyLayout {
+  lines: BodyLineLayout[];
+  totalHeight: number;
+}
+
 let textMeasureCanvas: HTMLCanvasElement | null = null;
 let verseMeasureRoot: HTMLDivElement | null = null;
 
@@ -209,6 +222,118 @@ const measureTextWidth = (segment: TextMeasureSegment, text: string) => {
   if (!ctx) return getFallbackTextWidth(text, segment.fontSize, segment.textScale);
   ctx.font = `${segment.bold ? 700 : 400} ${segment.fontSize}px "${segment.fontFamily}", sans-serif`;
   return ctx.measureText(text).width;
+};
+
+const measureTextRunWidth = (segment: TextMeasureSegment, text: string) => {
+  const chars = Array.from(text);
+  if (chars.length === 0) return 0;
+  const charSpacing = getCharSpacing(segment.fontSize, segment.textScale);
+  return chars.reduce((sum, char) => sum + measureTextWidth(segment, char), 0)
+    + Math.max(0, chars.length - 1) * charSpacing;
+};
+
+const getBodyWidthPt = () => (
+  SLIDE_WIDTH_IN * PPT_POINTS_PER_INCH * BODY_WIDTH_PERCENT / 100
+);
+
+const getSlideHeightIn = (settings: Pick<PPTSettings, 'ratio'>) => SLIDE_HEIGHT_BY_RATIO[settings.ratio];
+
+const getBodyBoxIn = (settings: Pick<PPTSettings, 'ratio' | 'bodyY' | 'bodyBottomMargin'>) => {
+  const slideHeightIn = getSlideHeightIn(settings);
+  return {
+    x: SLIDE_WIDTH_IN * (100 - BODY_WIDTH_PERCENT) / 200,
+    y: slideHeightIn * settings.bodyY / 100,
+    w: SLIDE_WIDTH_IN * BODY_WIDTH_PERCENT / 100,
+    h: slideHeightIn * getBodyHeightPercent(settings) / 100,
+  };
+};
+
+const getBodyTextSegment = (settings: PPTSettings): TextMeasureSegment => ({
+  text: '',
+  fontSize: settings.fontSize,
+  fontFamily: settings.bodyFontFamily,
+  bold: settings.bodyBold,
+  textScale: settings.bodyTextScale,
+});
+
+const getVerseNumTextSegment = (settings: PPTSettings): TextMeasureSegment => ({
+  text: '',
+  fontSize: settings.verseNumFontSize,
+  fontFamily: settings.verseNumFontFamily,
+  bold: settings.verseNumBold,
+  textScale: settings.verseNumTextScale,
+});
+
+const wrapVerseLines = (
+  verse: VerseData,
+  settings: PPTSettings,
+  maxWidthPt = getBodyWidthPt() * WRAP_WIDTH_SAFETY
+) => {
+  const bodySegment = getBodyTextSegment(settings);
+  const bodyCharSpacing = getCharSpacing(settings.fontSize, settings.bodyTextScale);
+  const verseNumWidth = verse.verseNum
+    ? measureTextRunWidth(getVerseNumTextSegment(settings), `${verse.verseNum} `)
+    : 0;
+
+  const lines: string[] = [];
+  let currentLine = '';
+  let currentWidth = verseNumWidth;
+
+  for (const char of Array.from(verse.text)) {
+    if (char === '\n') {
+      lines.push(currentLine);
+      currentLine = '';
+      currentWidth = 0;
+      continue;
+    }
+
+    const charWidth = measureTextWidth(bodySegment, char);
+    const spacing = currentLine.length > 0 ? bodyCharSpacing : 0;
+    const nextWidth = currentWidth + spacing + charWidth;
+
+    if (currentLine.length > 0 && nextWidth > maxWidthPt) {
+      lines.push(currentLine.trimEnd());
+      currentLine = char.trimStart();
+      currentWidth = currentLine ? charWidth : 0;
+    } else {
+      currentLine += char;
+      currentWidth = nextWidth;
+    }
+  }
+
+  lines.push(currentLine.trimEnd());
+  return lines.length > 0 ? lines : [''];
+};
+
+const buildBodyLayout = (verses: VerseData[], settings: PPTSettings): BodyLayout => {
+  const bodyLineHeightIn = (settings.fontSize * settings.verseLineSpacing) / PPT_POINTS_PER_INCH;
+  const verseNumHeightIn = settings.verseNumFontSize / PPT_POINTS_PER_INCH;
+  const verseGapIn = settings.verseGapPt / PPT_POINTS_PER_INCH;
+  const lines: BodyLineLayout[] = [];
+  let y = 0;
+
+  verses.forEach((verse, verseIndex) => {
+    const wrappedLines = wrapVerseLines(verse, settings);
+    wrappedLines.forEach((line, lineIndex) => {
+      const isFirstLine = lineIndex === 0;
+      const h = isFirstLine && verse.verseNum
+        ? Math.max(bodyLineHeightIn, verseNumHeightIn)
+        : bodyLineHeightIn;
+      lines.push({
+        verseNum: isFirstLine ? verse.verseNum : undefined,
+        text: line,
+        y,
+        h,
+      });
+      y += h;
+    });
+
+    if (verseIndex < verses.length - 1) {
+      y += verseGapIn;
+    }
+  });
+
+  return { lines, totalHeight: y };
 };
 
 const estimateWrappedLineCount = (segments: TextMeasureSegment[], maxWidth: number) => {
@@ -400,42 +525,16 @@ export default function App() {
       return groups;
     }
 
-    const slideHeightIn = SLIDE_HEIGHT_BY_RATIO[settings.ratio];
-    const bodyHeightIn = slideHeightIn * getBodyHeightPercent(settings) / 100;
-    const bodyWidthPt = SLIDE_WIDTH_IN * PPT_POINTS_PER_INCH * BODY_WIDTH_PERCENT / 100;
+    const bodyBox = getBodyBoxIn(settings);
     const bodyLineHeightIn = (settings.fontSize * settings.verseLineSpacing) / PPT_POINTS_PER_INCH;
     const usableBodyHeightIn = Math.max(
       0.1,
-      bodyHeightIn - Math.max(AUTO_PAGE_HEIGHT_SAFETY_IN, bodyLineHeightIn * 0.65)
+      bodyBox.h - Math.max(AUTO_PAGE_HEIGHT_SAFETY_IN, bodyLineHeightIn * 0.65)
     );
     const verseGapIn = settings.verseGapPt / PPT_POINTS_PER_INCH;
 
     const estimateVerseHeightIn = (verse: VerseData) => {
-      const measuredHeightIn = measureVerseHeightIn(verse, settings, bodyWidthPt);
-      if (measuredHeightIn) return measuredHeightIn;
-
-      const segments: TextMeasureSegment[] = [];
-      if (verse.verseNum) {
-        segments.push({
-          text: `${verse.verseNum} `,
-          fontSize: settings.verseNumFontSize,
-          fontFamily: settings.verseNumFontFamily,
-          bold: settings.verseNumBold,
-          textScale: settings.verseNumTextScale,
-        });
-      }
-      segments.push({
-        text: verse.text,
-        fontSize: settings.fontSize,
-        fontFamily: settings.bodyFontFamily,
-        bold: settings.bodyBold,
-        textScale: settings.bodyTextScale,
-      });
-      const lineCount = estimateWrappedLineCount(segments, bodyWidthPt);
-      const firstLineHeightIn = verse.verseNum
-        ? Math.max(bodyLineHeightIn, settings.verseNumFontSize / PPT_POINTS_PER_INCH)
-        : bodyLineHeightIn;
-      return firstLineHeightIn + Math.max(0, lineCount - 1) * bodyLineHeightIn;
+      return buildBodyLayout([verse], settings).totalHeight;
     };
 
     const groups: SlideData[] = [];
@@ -590,6 +689,60 @@ export default function App() {
     const titleH = Math.max(0.4, (settings.titleFontSize / 72) * 1.8);
     const subtitleH = Math.max(0.35, (settings.subtitleFontSize / 72) * 1.8);
 
+    const addBodyLine = (
+      slide: ReturnType<typeof pptx.addSlide>,
+      line: BodyLineLayout,
+      bodyBox: ReturnType<typeof getBodyBoxIn>,
+      startOffsetY: number
+    ) => {
+      const y = bodyBox.y + startOffsetY + line.y;
+      const commonOptions: any = {
+        x: bodyBox.x,
+        y,
+        w: bodyBox.w,
+        h: line.h,
+        fontFace: settings.bodyFontFamily,
+        fontSize: settings.fontSize,
+        bold: settings.bodyBold,
+        color: settings.textColor.replace('#', ''),
+        align: settings.textAlign,
+        valign: 'top',
+        margin: 0,
+        fit: 'resize',
+      };
+
+      if (line.verseNum) {
+        slide.addText([
+          {
+            text: `${line.verseNum} `,
+            options: {
+              fontSize: settings.verseNumFontSize,
+              color: settings.verseNumColor.replace('#', ''),
+              fontFace: settings.verseNumFontFamily,
+              bold: settings.verseNumBold,
+              charSpacing: getCharSpacing(settings.verseNumFontSize, settings.verseNumTextScale),
+            },
+          },
+          {
+            text: line.text,
+            options: {
+              fontSize: settings.fontSize,
+              color: settings.textColor.replace('#', ''),
+              fontFace: settings.bodyFontFamily,
+              bold: settings.bodyBold,
+              charSpacing: getCharSpacing(settings.fontSize, settings.bodyTextScale),
+            },
+          },
+        ], commonOptions);
+        return;
+      }
+
+      slide.addText(line.text, {
+        ...commonOptions,
+        charSpacing: getCharSpacing(settings.fontSize, settings.bodyTextScale),
+      });
+    };
+
     const addSlideContent = (slide: ReturnType<typeof pptx.addSlide>, pTitle: string, pSubtitle: string, slideVerses: VerseData[], valign: 'middle' | 'top') => {
       if (settings.bgImage) {
         slide.background = { data: settings.bgImage };
@@ -615,53 +768,12 @@ export default function App() {
           margin: 0,
         });
       }
-      const textElements: any[] = [];
-      slideVerses.forEach((verse, index) => {
-        const isLastVerse = index === slideVerses.length - 1;
-        if (verse.verseNum) {
-          // Keep verse number inline so larger verse sizes do not shift the first line upward
-          textElements.push({
-            text: `${verse.verseNum} `,
-            options: {
-              fontSize: settings.verseNumFontSize,
-              color: settings.verseNumColor.replace('#', ''),
-              fontFace: settings.verseNumFontFamily,
-              bold: settings.verseNumBold,
-              charSpacing: getCharSpacing(settings.verseNumFontSize, settings.verseNumTextScale),
-            },
-          });
-        }
-        textElements.push({
-          text: verse.text,
-          options: {
-            fontSize: settings.fontSize,
-            color: settings.textColor.replace('#', ''),
-            fontFace: settings.bodyFontFamily,
-            bold: settings.bodyBold,
-            charSpacing: getCharSpacing(settings.fontSize, settings.bodyTextScale),
-            breakLine: true, // always break after verse text
-          },
-        });
-        // Adjustable spacer between verses (independent from within-verse line spacing)
-        if (!isLastVerse && settings.verseGapPt > 0) {
-          textElements.push({
-            text: ' ',
-            options: {
-              fontSize: settings.verseGapPt,
-              fontFace: settings.bodyFontFamily,
-              bold: settings.bodyBold,
-              breakLine: true,
-            },
-          });
-        }
-      });
-      const bodyTextOptions: any = {
-        x: '5%', y: `${settings.bodyY}%`, w: '90%', h: `${getBodyHeightPercent(settings)}%`,
-        fontFace: settings.bodyFontFamily, bold: settings.bodyBold, align: settings.textAlign, valign,
-        lineSpacingMultiple: settings.verseLineSpacing,
-        margin: 0,
-      };
-      slide.addText(textElements, bodyTextOptions);
+      const bodyBox = getBodyBoxIn(settings);
+      const bodyLayout = buildBodyLayout(slideVerses, settings);
+      const startOffsetY = valign === 'middle'
+        ? Math.max(0, (bodyBox.h - bodyLayout.totalHeight) / 2)
+        : 0;
+      bodyLayout.lines.forEach(line => addBodyLine(slide, line, bodyBox, startOffsetY));
     };
 
     for (const passage of passages) {
@@ -693,6 +805,9 @@ export default function App() {
   };
 
   const currentPreviewSlide = allSlides[previewSlideIndex];
+  const currentPreviewBodyLayout = currentPreviewSlide
+    ? buildBodyLayout(currentPreviewSlide.verses, settings)
+    : { lines: [], totalHeight: 0 };
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 font-sans">
@@ -1221,16 +1336,50 @@ export default function App() {
                   overflow: 'hidden',
                 }}
               >
-                <div style={{ display: 'flex', flexDirection: 'column', gap: `${settings.verseGapPt * previewFontScale}px` }}>
-                  {currentPreviewSlide?.verses.map((verse, idx) => (
-                    <p key={idx} className="break-keep" style={{ fontSize: `${settings.fontSize * previewFontScale}px`, lineHeight: settings.verseLineSpacing, margin: 0, fontWeight: settings.bodyBold ? 700 : 400, letterSpacing: getPreviewLetterSpacing(settings.fontSize, settings.bodyTextScale, previewFontScale) }}>
-                      {verse.verseNum && (
-                        <span className="mr-1 inline-block" style={{ color: settings.verseNumColor, fontSize: `${settings.verseNumFontSize * previewFontScale}px`, fontWeight: settings.verseNumBold ? 700 : 400, lineHeight: 1, fontFamily: `"${settings.verseNumFontFamily}", sans-serif`, letterSpacing: getPreviewLetterSpacing(settings.verseNumFontSize, settings.verseNumTextScale, previewFontScale) }}>
-                          {verse.verseNum}
+                <div
+                  style={{
+                    position: 'relative',
+                    width: '100%',
+                    height: `${currentPreviewBodyLayout.totalHeight * PPT_POINTS_PER_INCH * previewFontScale}px`,
+                  }}
+                >
+                  {currentPreviewBodyLayout.lines.map((line, idx) => (
+                    <div
+                      key={idx}
+                      className="break-keep"
+                      style={{
+                        position: 'absolute',
+                        top: `${line.y * PPT_POINTS_PER_INCH * previewFontScale}px`,
+                        left: 0,
+                        width: '100%',
+                        height: `${line.h * PPT_POINTS_PER_INCH * previewFontScale}px`,
+                        fontSize: `${settings.fontSize * previewFontScale}px`,
+                        lineHeight: `${line.h * PPT_POINTS_PER_INCH * previewFontScale}px`,
+                        margin: 0,
+                        fontWeight: settings.bodyBold ? 700 : 400,
+                        letterSpacing: getPreviewLetterSpacing(settings.fontSize, settings.bodyTextScale, previewFontScale),
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      {line.verseNum && (
+                        <span
+                          className="inline-block"
+                          style={{
+                            color: settings.verseNumColor,
+                            fontSize: `${settings.verseNumFontSize * previewFontScale}px`,
+                            fontWeight: settings.verseNumBold ? 700 : 400,
+                            lineHeight: 1,
+                            fontFamily: `"${settings.verseNumFontFamily}", sans-serif`,
+                            letterSpacing: getPreviewLetterSpacing(settings.verseNumFontSize, settings.verseNumTextScale, previewFontScale),
+                            whiteSpace: 'pre',
+                          }}
+                        >
+                          {`${line.verseNum} `}
                         </span>
                       )}
-                      {verse.text}
-                    </p>
+                      {line.text}
+                    </div>
                   ))}
                 </div>
               </div>
