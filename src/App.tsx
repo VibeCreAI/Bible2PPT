@@ -66,6 +66,7 @@ interface PPTSettings {
   titleY: number;
   subtitleY: number;
   bodyY: number;
+  bodyBottomMargin: number;
   slideSplitMode: 'per_verse' | 'per_2_verses' | 'per_3_verses' | 'per_4_verses' | 'per_5_verses' | 'auto_page';
 }
 
@@ -96,6 +97,7 @@ const DEFAULT_SETTINGS: PPTSettings = {
   titleY: 5,
   subtitleY: 13,
   bodyY: 25,
+  bodyBottomMargin: 10,
   slideSplitMode: 'per_verse',
 };
 
@@ -134,6 +136,34 @@ const getAlignClasses = (align: PPTSettings['textAlign']) => {
 const getTextAlignStyle = (align: PPTSettings['textAlign']): React.CSSProperties['textAlign'] => {
   if (align === 'justify') return 'justify';
   return align;
+};
+
+const SLIDE_WIDTH_IN = 10;
+const SLIDE_HEIGHT_BY_RATIO: Record<PPTSettings['ratio'], number> = {
+  '16:9': 5.625,
+  '4:3': 7.5,
+};
+const BODY_WIDTH_PERCENT = 90;
+const MIN_BODY_HEIGHT_PERCENT = 5;
+const AUTO_PAGE_HEIGHT_SAFETY_IN = 0.12;
+const CJK_CHAR_WIDTH_RATIO = 0.9;
+const CJK_CHAR_REGEX = /[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF\u3040-\u30FF\u3400-\u9FFF]/;
+const PUNCTUATION_REGEX = /[.,;:!?'"()[\]{}<>/\\|`~@#$%^&*_+=-]/;
+
+const getBodyHeightPercent = (settings: Pick<PPTSettings, 'bodyY' | 'bodyBottomMargin'>) => (
+  Math.max(MIN_BODY_HEIGHT_PERCENT, 100 - settings.bodyY - settings.bodyBottomMargin)
+);
+
+const getTextWidthUnits = (text: string) => {
+  let units = 0;
+  for (const char of Array.from(text)) {
+    if (/\s/.test(char)) units += 0.35;
+    else if (/[A-Za-z0-9]/.test(char)) units += 0.58;
+    else if (PUNCTUATION_REGEX.test(char)) units += 0.45;
+    else if (CJK_CHAR_REGEX.test(char)) units += 1;
+    else units += 0.85;
+  }
+  return units;
 };
 
 function parseVerses(rawText: string): VerseData[] {
@@ -241,33 +271,51 @@ export default function App() {
       return groups;
     }
 
-    const slideHeightIn = settings.ratio === '16:9' ? 5.625 : 7.5;
-    const bodyHeightIn = slideHeightIn * (95 - settings.bodyY) / 100;
-    const charWidthIn = (settings.fontSize * 0.58) / 72;
-    const lineHeightIn = (settings.fontSize * settings.verseLineSpacing) / 72;
-    const charsPerLine = Math.max(1, Math.floor(9 / charWidthIn));
-    const linesPerSlide = Math.max(1, Math.floor(bodyHeightIn / lineHeightIn));
+    const slideHeightIn = SLIDE_HEIGHT_BY_RATIO[settings.ratio];
+    const bodyHeightIn = slideHeightIn * getBodyHeightPercent(settings) / 100;
+    const usableBodyHeightIn = Math.max(0.1, bodyHeightIn - AUTO_PAGE_HEIGHT_SAFETY_IN);
+    const bodyWidthIn = SLIDE_WIDTH_IN * BODY_WIDTH_PERCENT / 100;
+    const cjkCharWidthIn = (settings.fontSize * CJK_CHAR_WIDTH_RATIO) / 72;
+    const maxUnitsPerLine = Math.max(1, bodyWidthIn / cjkCharWidthIn);
+    const bodyLineHeightIn = (settings.fontSize * settings.verseLineSpacing) / 72;
+    const verseGapIn = (settings.verseGapPt * Math.max(1, settings.verseLineSpacing)) / 72;
+
+    const estimateVerseHeightIn = (verse: VerseData) => {
+      const text = `${verse.verseNum ? `${verse.verseNum} ` : ''}${verse.text}`;
+      const lineCount = Math.max(1, Math.ceil(getTextWidthUnits(text) / maxUnitsPerLine));
+      const firstLineHeightIn = verse.verseNum
+        ? Math.max(bodyLineHeightIn, settings.verseNumFontSize / 72)
+        : bodyLineHeightIn;
+      return firstLineHeightIn + Math.max(0, lineCount - 1) * bodyLineHeightIn;
+    };
 
     const groups: SlideData[] = [];
     let currentGroup: VerseData[] = [];
-    let usedLines = 0;
+    let usedHeightIn = 0;
 
     for (const verse of parsedVerses) {
-      const textLen = verse.text.length + (verse.verseNum ? 2 : 0);
-      // Add estimated extra lines for verse-to-verse spacer (pt -> line count)
-      const verseLines = Math.ceil(textLen / charsPerLine) + (settings.verseGapPt / settings.fontSize);
-      if (usedLines + verseLines > linesPerSlide && currentGroup.length > 0) {
+      const verseHeightIn = estimateVerseHeightIn(verse);
+      const nextHeightIn = verseHeightIn + (currentGroup.length > 0 ? verseGapIn : 0);
+      if (usedHeightIn + nextHeightIn > usableBodyHeightIn && currentGroup.length > 0) {
         groups.push({ verses: currentGroup });
         currentGroup = [verse];
-        usedLines = verseLines;
+        usedHeightIn = verseHeightIn;
       } else {
         currentGroup.push(verse);
-        usedLines += verseLines;
+        usedHeightIn += nextHeightIn;
       }
     }
     if (currentGroup.length > 0) groups.push({ verses: currentGroup });
     return groups;
-  }, [settings.ratio, settings.bodyY, settings.fontSize, settings.verseLineSpacing, settings.verseGapPt]);
+  }, [
+    settings.ratio,
+    settings.bodyY,
+    settings.bodyBottomMargin,
+    settings.fontSize,
+    settings.verseNumFontSize,
+    settings.verseLineSpacing,
+    settings.verseGapPt,
+  ]);
 
   // All slides across all passages for preview
   const allSlides = useMemo((): FlatSlide[] => {
@@ -447,7 +495,7 @@ export default function App() {
         }
       });
       const bodyTextOptions: any = {
-        x: '5%', y: `${settings.bodyY}%`, w: '90%', h: `${95 - settings.bodyY}%`,
+        x: '5%', y: `${settings.bodyY}%`, w: '90%', h: `${getBodyHeightPercent(settings)}%`,
         fontFace: settings.bodyFontFamily, bold: settings.bodyBold, align: settings.textAlign, valign,
         lineSpacingMultiple: settings.verseLineSpacing,
       };
@@ -795,7 +843,7 @@ export default function App() {
                   위치 조정
                 </h3>
                 <div className="space-y-3">
-                  {([['제목 위쪽 여백', 'titleY', 0, 50], ['소제목 위쪽 여백', 'subtitleY', 0, 50], ['본문 위쪽 여백', 'bodyY', 5, 80]] as const).map(([label, key, min, max]) => (
+                  {([['제목 위쪽 여백', 'titleY', 0, 50], ['소제목 위쪽 여백', 'subtitleY', 0, 50], ['본문 위쪽 여백', 'bodyY', 5, 80], ['본문 아래쪽 여백', 'bodyBottomMargin', 5, 35]] as const).map(([label, key, min, max]) => (
                     <div key={key}>
                       <div className="flex justify-between mb-1">
                         <label className="text-xs font-medium text-gray-600">{label}</label>
@@ -992,7 +1040,7 @@ export default function App() {
                 )}
                 style={{
                   top: `${settings.bodyY}%`,
-                  height: `${95 - settings.bodyY}%`,
+                  height: `${getBodyHeightPercent(settings)}%`,
                   color: settings.textColor,
                   fontFamily: `"${settings.bodyFontFamily}", sans-serif`,
                   textAlign: getTextAlignStyle(settings.textAlign),
